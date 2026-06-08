@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Article {
+  id          Int        @id @default(autoincrement())
+  source      String
+  title       String
+  url         String     @unique
+  publishedAt DateTime
+  fetchedAt   DateTime   @default(now())
+  status      String     @default("pending") // pending | processed | failed
+  sentences   Sentence[]
+
+  @@index([publishedAt])
+  @@index([source])
+}
+
+model Sentence {
+  id               Int          @id @default(autoincrement())
+  articleId        Int
+  article          Article      @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  position         Int
+  original         String
+  translation      String
+  grammarJson      String       // JSON-serialized grammar breakdown
+  vocabulary       Vocabulary[]
+
+  @@index([articleId])
+}
+
+model Vocabulary {
+  id              Int      @id @default(autoincrement())
+  sentenceId      Int
+  sentence        Sentence @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  word            String
+  meaningBn       String
+  difficulty      String   // beginner | intermediate | advanced
+  exampleSentence String
+  createdAt       DateTime @default(now())
+
+  @@index([word])
+  @@index([difficulty])
+}
