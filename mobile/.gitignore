@@ -14,3 +14,4 @@ android/local.properties
 .vscode/
 google-services.json
 GoogleService-Info.plist
+.cc-history/

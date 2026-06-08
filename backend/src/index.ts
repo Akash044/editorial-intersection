@@ -4,6 +4,7 @@ import cors from "cors";
 import articlesRouter from "./routes/articles";
 import vocabularyRouter from "./routes/vocabulary";
 import healthRouter from "./routes/health";
+import syncRouter from "./routes/sync";
 import { startScheduler } from "./jobs/scheduler";
 
 const app = express();
@@ -14,6 +15,7 @@ app.use(express.json());
 app.use("/health", healthRouter);
 app.use("/api/articles", articlesRouter);
 app.use("/api/vocabulary", vocabularyRouter);
+app.use("/api/sync", syncRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[unhandled]", err);

@@ -1,7 +1,15 @@
+import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
 import { prisma } from "../config/db";
 import { env } from "../config/env";
 import { IAnalyzedSentence, IRawArticle, IVocabItem } from "../types/pipeline";
+
+function cacheHash(sentence: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(`${env.GEMINI_MODEL}:${sentence.trim()}`)
+    .digest("hex");
+}
 
 const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 
@@ -61,6 +69,22 @@ function parseRetryDelaySeconds(err: unknown): number | null {
 }
 
 async function analyzeSentence(sentence: string): Promise<IAnalyzedSentence> {
+  const hash = cacheHash(sentence);
+
+  // Cache hit — skip the Gemini call entirely. Cuts cost to zero on re-syncs.
+  const cached = await prisma.sentenceCache.findUnique({ where: { hash } });
+  if (cached) {
+    await prisma.sentenceCache.update({
+      where: { hash },
+      data: { hitCount: { increment: 1 }, lastUsedAt: new Date() },
+    });
+    return {
+      translation: cached.translation,
+      grammar: JSON.parse(cached.grammarJson),
+      vocabulary: JSON.parse(cached.vocabularyJson),
+    };
+  }
+
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -79,6 +103,22 @@ async function analyzeSentence(sentence: string): Promise<IAnalyzedSentence> {
       const parsed = JSON.parse(text) as IAnalyzedSentence;
       if (!parsed.translation || !parsed.grammar) throw new Error("invalid analysis shape");
       parsed.vocabulary = parsed.vocabulary ?? [];
+
+      // Persist to cache for next time. Use upsert in case two concurrent
+      // pipeline runs raced on the same sentence.
+      await prisma.sentenceCache.upsert({
+        where: { hash },
+        update: { lastUsedAt: new Date() },
+        create: {
+          hash,
+          model: env.GEMINI_MODEL,
+          sentence,
+          translation: parsed.translation,
+          grammarJson: JSON.stringify(parsed.grammar),
+          vocabularyJson: JSON.stringify(parsed.vocabulary),
+        },
+      });
+
       return parsed;
     } catch (err) {
       const retryAfter = parseRetryDelaySeconds(err);

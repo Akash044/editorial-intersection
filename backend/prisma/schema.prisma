@@ -47,3 +47,22 @@ model Vocabulary {
   @@index([word])
   @@index([difficulty])
 }
+
+// Caches Gemini analyses keyed by sha256(model + sentence). When the same
+// English sentence appears again (same article re-synced, or a different
+// article quoting the same sentence) we reuse this row instead of paying
+// for another generateContent call.
+model SentenceCache {
+  id             Int      @id @default(autoincrement())
+  hash           String   @unique
+  model          String
+  sentence       String
+  translation    String
+  grammarJson    String
+  vocabularyJson String
+  hitCount       Int      @default(0)
+  createdAt      DateTime @default(now())
+  lastUsedAt     DateTime @default(now())
+
+  @@index([model])
+}

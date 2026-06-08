@@ -5,6 +5,10 @@ const schema = z.object({
   DATABASE_URL: z.string().url(),
   GEMINI_API_KEY: z.string().min(1),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+  PIPELINE_AUTO: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
   PIPELINE_CRON: z.string().default("0 0 * * *"),
   PIPELINE_TIMEZONE: z.string().default("Asia/Dhaka"),
   MAX_ARTICLES_PER_SOURCE: z.coerce.number().int().positive().default(2),

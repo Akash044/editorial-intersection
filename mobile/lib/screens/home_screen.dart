@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/article.dart';
@@ -15,11 +16,19 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _api = ApiService();
   late Future<List<Article>> _articlesFuture;
+  bool _syncing = false;
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
     _articlesFuture = _api.fetchLatestArticles();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -29,12 +38,71 @@ class _HomeScreenState extends State<HomeScreen> {
     await _articlesFuture;
   }
 
+  Future<void> _startSync() async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+    try {
+      await _api.triggerSync();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Syncing news… this may take a minute.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+      _pollSyncStatus();
+    } catch (err) {
+      if (!mounted) return;
+      setState(() => _syncing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Sync failed: $err')),
+      );
+    }
+  }
+
+  void _pollSyncStatus() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      try {
+        final status = await _api.getSyncStatus();
+        if (!status.running) {
+          timer.cancel();
+          if (!mounted) return;
+          setState(() {
+            _syncing = false;
+            _articlesFuture = _api.fetchLatestArticles();
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(status.lastError != null
+                  ? 'Sync finished with errors: ${status.lastError}'
+                  : 'Sync complete — ${status.articleCount} articles, cache: ${status.cacheCount}'),
+            ),
+          );
+        }
+      } catch (_) {
+        // Transient network errors during polling are non-fatal.
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Today's Editorials"),
         actions: [
+          IconButton(
+            icon: _syncing
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                : const Icon(Icons.sync),
+            tooltip: _syncing ? 'Syncing…' : 'Sync news',
+            onPressed: _syncing ? null : _startSync,
+          ),
           IconButton(
             icon: const Icon(Icons.menu_book_outlined),
             tooltip: 'Vocabulary',
@@ -66,8 +134,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Padding(
                   padding: EdgeInsets.all(24),
                   child: Text(
-                    "No processed articles yet. Run the pipeline:\n\n"
-                    "POST /health/run-pipeline\n\nor `npm run pipeline:run` on the backend.",
+                    'No articles yet. Tap the sync icon above to fetch today\'s editorials.',
                   ),
                 ),
               ]);

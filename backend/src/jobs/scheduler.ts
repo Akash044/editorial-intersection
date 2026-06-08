@@ -5,6 +5,25 @@ import { processArticles } from "./processor";
 import { sendDailyNotification } from "./notifier";
 
 let running = false;
+let lastStartedAt: Date | null = null;
+let lastFinishedAt: Date | null = null;
+let lastError: string | null = null;
+
+export interface PipelineStatus {
+  running: boolean;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastError: string | null;
+}
+
+export function getPipelineStatus(): PipelineStatus {
+  return {
+    running,
+    lastStartedAt: lastStartedAt?.toISOString() ?? null,
+    lastFinishedAt: lastFinishedAt?.toISOString() ?? null,
+    lastError,
+  };
+}
 
 export async function runPipeline(): Promise<void> {
   if (running) {
@@ -12,6 +31,8 @@ export async function runPipeline(): Promise<void> {
     return;
   }
   running = true;
+  lastStartedAt = new Date();
+  lastError = null;
   const started = Date.now();
   console.log("[pipeline] start");
   try {
@@ -22,13 +43,19 @@ export async function runPipeline(): Promise<void> {
     await sendDailyNotification(vocab);
     console.log(`[pipeline] done in ${Math.round((Date.now() - started) / 1000)}s`);
   } catch (err) {
+    lastError = (err as Error).message;
     console.error("[pipeline] failed:", err);
   } finally {
     running = false;
+    lastFinishedAt = new Date();
   }
 }
 
 export function startScheduler(): void {
+  if (!env.PIPELINE_AUTO) {
+    console.log("[scheduler] auto-pipeline disabled — trigger via POST /api/sync");
+    return;
+  }
   if (!cron.validate(env.PIPELINE_CRON)) {
     console.error(`[scheduler] invalid cron "${env.PIPELINE_CRON}"`);
     return;

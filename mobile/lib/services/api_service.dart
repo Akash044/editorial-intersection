@@ -47,9 +47,56 @@ class ApiService {
     return data.map((j) => Vocabulary.fromJson(j as Map<String, dynamic>)).toList();
   }
 
+  Future<SyncStatus> triggerSync() async {
+    final res = await _client.post(Uri.parse('${ApiConfig.baseUrl}/api/sync'));
+    if (res.statusCode == 409) {
+      // Already running — that's fine, the caller can poll.
+      return getSyncStatus();
+    }
+    _ensureOk(res);
+    return getSyncStatus();
+  }
+
+  Future<SyncStatus> getSyncStatus() async {
+    final res = await _client.get(Uri.parse('${ApiConfig.baseUrl}/api/sync/status'));
+    _ensureOk(res);
+    return SyncStatus.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   void _ensureOk(http.Response res) {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('API ${res.statusCode}: ${res.body}');
     }
   }
+}
+
+class SyncStatus {
+  final bool running;
+  final DateTime? lastStartedAt;
+  final DateTime? lastFinishedAt;
+  final String? lastError;
+  final int articleCount;
+  final int cacheCount;
+
+  SyncStatus({
+    required this.running,
+    required this.lastStartedAt,
+    required this.lastFinishedAt,
+    required this.lastError,
+    required this.articleCount,
+    required this.cacheCount,
+  });
+
+  factory SyncStatus.fromJson(Map<String, dynamic> json) => SyncStatus(
+        running: json['running'] as bool,
+        lastStartedAt: json['lastStartedAt'] != null
+            ? DateTime.parse(json['lastStartedAt'] as String)
+            : null,
+        lastFinishedAt: json['lastFinishedAt'] != null
+            ? DateTime.parse(json['lastFinishedAt'] as String)
+            : null,
+        lastError: json['lastError'] as String?,
+        articleCount: (json['articleCount'] ?? 0) as int,
+        cacheCount: (json['cacheCount'] ?? 0) as int,
+      );
 }
