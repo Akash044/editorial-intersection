@@ -53,6 +53,16 @@ function cleanBodyText(text: string): string {
   // Strip "Photo: ..." / "Photo Credit: ..." captions up to the next period.
   s = s.replace(/\bPhoto(?:\s+Credit)?:[^.]*\.?/g, " ");
 
+  // Strip newspaper header/byline metadata Readability glues into the body,
+  // e.g. Daily Star's "8 June 2026, 18:40 PM UPDATED 7 hour(s) ago VISUAL: STAR".
+  const MONTHS =
+    "Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?";
+  s = s.replace(new RegExp(`\\b\\d{1,2}\\s+(?:${MONTHS})\\s+\\d{4},?\\s*\\d{1,2}:\\d{2}\\s*(?:AM|PM)?`, "gi"), " ");
+  s = s.replace(/\bUPDATED\b/g, " "); // all-caps header marker only, not prose "updated"
+  s = s.replace(/\b\d+\s*(?:second|minute|hour|day|week|month|year)s?(?:\(s\))?\s+ago\b/gi, " ");
+  // "VISUAL: STAR" — credit is an all-caps token (2+ caps), so we don't eat "The".
+  s = s.replace(/\bVISUAL:\s*[A-Z]{2,}(?:\s+[A-Z]{2,})*/g, " ");
+
   // Strip standalone caption tokens when they appear glued or surrounded by
   // sentence punctuation. Only matches the capitalised form so we don't
   // mangle normal usage of these words.
@@ -111,6 +121,13 @@ function splitSentences(text: string): string[] {
     .filter((s) => s.length > 20 && s.length < 600);
 }
 
+// MAX_SENTENCES_PER_ARTICLE caps how many sentences we process per article to
+// control Gemini cost. 0 means "no cap" — process the full article.
+function capSentences(sentences: string[]): string[] {
+  const max = env.MAX_SENTENCES_PER_ARTICLE;
+  return max > 0 ? sentences.slice(0, max) : sentences;
+}
+
 async function extractArticleBody(url: string): Promise<string> {
   const { data: html } = await http.get<string>(url, { responseType: "text" });
 
@@ -147,7 +164,7 @@ async function fetchFromRss(source: INewsSource): Promise<IRawArticle[]> {
     if (!item.link) continue;
     try {
       const body = cleanBodyText(await extractArticleBody(item.link));
-      const sentences = splitSentences(body).slice(0, env.MAX_SENTENCES_PER_ARTICLE);
+      const sentences = capSentences(splitSentences(body));
       if (sentences.length === 0) continue;
       results.push({
         source: source.name,
@@ -183,7 +200,7 @@ async function fetchFromIndex(source: INewsSource): Promise<IRawArticle[]> {
   for (const link of links.slice(0, env.MAX_ARTICLES_PER_SOURCE)) {
     try {
       const body = cleanBodyText(await extractArticleBody(link));
-      const sentences = splitSentences(body).slice(0, env.MAX_SENTENCES_PER_ARTICLE);
+      const sentences = capSentences(splitSentences(body));
       if (sentences.length === 0) continue;
       const title = body.split(SENTENCE_RE)[0]?.slice(0, 120) ?? "(untitled)";
       results.push({
@@ -200,13 +217,68 @@ async function fetchFromIndex(source: INewsSource): Promise<IRawArticle[]> {
   return results;
 }
 
+// Quintype CMS exposes a public JSON API: a section listing endpoint plus a
+// per-story endpoint whose cards/story-elements carry the clean body text.
+// No RSS or headless browser needed.
+interface IQuintypeElement {
+  type: string;
+  text?: string;
+}
+interface IQuintypeStory {
+  headline?: string;
+  slug?: string;
+  url?: string;
+  "first-published-at"?: number;
+  cards?: { "story-elements"?: IQuintypeElement[] }[];
+}
+
+async function fetchFromQuintype(source: INewsSource): Promise<IRawArticle[]> {
+  const cfg = source.quintype;
+  if (!cfg) return [];
+  const listUrl =
+    `${cfg.baseUrl}/api/v1/advanced-search` +
+    `?section-name=${encodeURIComponent(cfg.section)}` +
+    `&limit=${env.MAX_ARTICLES_PER_SOURCE}` +
+    `&fields=headline,slug,url,first-published-at`;
+  const { data: list } = await http.get<{ items?: IQuintypeStory[] }>(listUrl);
+  const items = list.items ?? [];
+  const results: IRawArticle[] = [];
+  for (const item of items) {
+    if (!item.slug || !item.url) continue;
+    try {
+      const { data: full } = await http.get<{ story?: IQuintypeStory }>(
+        `${cfg.baseUrl}/api/v1/stories-by-slug?slug=${encodeURIComponent(item.slug)}`,
+      );
+      const rawText = (full.story?.cards ?? [])
+        .flatMap((c) => c["story-elements"] ?? [])
+        .filter((e) => e.type === "text" && e.text)
+        .map((e) => (e.text as string).replace(/<[^>]+>/g, " "))
+        .join(" ");
+      const sentences = capSentences(splitSentences(cleanBodyText(rawText)));
+      if (sentences.length === 0) continue;
+      results.push({
+        source: source.name,
+        title: item.headline ?? "(untitled)",
+        url: item.url,
+        publishedAt: item["first-published-at"] ? new Date(item["first-published-at"]) : new Date(),
+        sentences,
+      });
+    } catch (err) {
+      console.warn(`[scraper] quintype failed ${source.name} ${item.slug}:`, (err as Error).message);
+    }
+  }
+  return results;
+}
+
 export async function scrapeArticles(): Promise<IRawArticle[]> {
   const all: IRawArticle[] = [];
   for (const source of SOURCES) {
     try {
-      const articles = source.rss
-        ? await fetchFromRss(source)
-        : await fetchFromIndex(source);
+      const articles = source.quintype
+        ? await fetchFromQuintype(source)
+        : source.rss
+          ? await fetchFromRss(source)
+          : await fetchFromIndex(source);
       console.log(`[scraper] ${source.name}: ${articles.length} articles`);
       all.push(...articles);
     } catch (err) {

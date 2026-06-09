@@ -6,6 +6,9 @@ export interface INewsSource {
   linkSelector?: string;
   // Optional override selector if Readability mis-extracts.
   contentSelector?: string;
+  // Quintype-CMS sites (e.g. Prothom Alo) — JS SPAs with no usable RSS but a
+  // public JSON API. baseUrl is the site origin; section is the section slug.
+  quintype?: { baseUrl: string; section: string };
 }
 
 export const SOURCES: INewsSource[] = [
@@ -15,16 +18,19 @@ export const SOURCES: INewsSource[] = [
   },
   {
     name: "Prothom Alo English",
-    rss: "https://en.prothomalo.com/opinion",
+    // No populated RSS — Quintype SPA. Pull the opinion section via its JSON API.
+    quintype: { baseUrl: "https://en.prothomalo.com", section: "opinion" },
   },
   {
     name: "The Guardian",
     rss: "https://www.theguardian.com/commentisfree/rss",
   },
+  // NYT removed: hard subscription paywall — Readability only reached the
+  // ad/nav chrome, so it produced junk "sentences". A headless browser can't
+  // bypass a paywall either. Replaced with The Hindu's open-access opinion feed.
   {
-    name: "NYT Opinion",
-    // NYT body is often paywalled — Readability may only grab the lede.
-    rss: "https://rss.nytimes.com/services/xml/rss/nyt/Opinion.xml",
+    name: "The Hindu Opinion",
+    rss: "https://www.thehindu.com/opinion/feeder/default.rss",
   },
   // The Daily Observer BD: their category URL structure changed and we don't
   // have a confirmed current path for editorials. Re-enable once verified.

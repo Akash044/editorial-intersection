@@ -4,14 +4,35 @@ import { prisma } from "../config/db";
 import { env } from "../config/env";
 import { IAnalyzedSentence, IRawArticle, IVocabItem } from "../types/pipeline";
 
-function cacheHash(sentence: string): string {
+function cacheHash(model: string, sentence: string): string {
   return crypto
     .createHash("sha256")
-    .update(`${env.GEMINI_MODEL}:${sentence.trim()}`)
+    .update(`${model}:${sentence.trim()}`)
     .digest("hex");
 }
 
 const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+
+// Models tried in order. When the active model's daily free-tier quota is
+// exhausted (429), the pipeline falls back to the next one for the rest of the
+// run instead of failing. Reset to the primary at the start of each run so a
+// freshly-reset daily quota is picked up automatically.
+const MODEL_CHAIN = Array.from(new Set([env.GEMINI_MODEL, ...env.GEMINI_FALLBACK_MODELS]));
+let activeModel = MODEL_CHAIN[0];
+
+export function resetActiveModel(): void {
+  activeModel = MODEL_CHAIN[0];
+}
+export function getActiveModel(): string {
+  return activeModel;
+}
+export function getModelChain(): string[] {
+  return [...MODEL_CHAIN];
+}
+function nextModel(current: string): string | null {
+  const i = MODEL_CHAIN.indexOf(current);
+  return i >= 0 && i + 1 < MODEL_CHAIN.length ? MODEL_CHAIN[i + 1] : null;
+}
 
 const SYSTEM_INSTRUCTION = `You are a language analysis assistant for native Bengali (Bangla) speakers learning English by reading editorials from English-language newspapers.
 
@@ -68,28 +89,50 @@ function parseRetryDelaySeconds(err: unknown): number | null {
   return m ? Math.ceil(Number(m[1])) : null;
 }
 
+function is429(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    m.includes("429") ||
+    m.includes("resource_exhausted") ||
+    m.includes("too many requests") ||
+    m.includes("exceeded your current quota")
+  );
+}
+
+// Distinguishes a per-day quota exhaustion (switch model — same model is useless
+// until tomorrow) from a per-minute throttle (back off and retry same model).
+function isDailyQuota(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : String(err);
+  return /per\s*day|perday|requests per day|GenerateRequestsPerDay/i.test(m);
+}
+
 async function analyzeSentence(sentence: string): Promise<IAnalyzedSentence> {
-  const hash = cacheHash(sentence);
+  let rateLimitRetries = 0;
+  const maxRateLimitRetries = 2;
 
-  // Cache hit — skip the Gemini call entirely. Cuts cost to zero on re-syncs.
-  const cached = await prisma.sentenceCache.findUnique({ where: { hash } });
-  if (cached) {
-    await prisma.sentenceCache.update({
-      where: { hash },
-      data: { hitCount: { increment: 1 }, lastUsedAt: new Date() },
-    });
-    return {
-      translation: cached.translation,
-      grammar: JSON.parse(cached.grammarJson),
-      vocabulary: JSON.parse(cached.vocabularyJson),
-    };
-  }
+  // Loop is bounded: each daily-quota switch advances along MODEL_CHAIN (finite,
+  // nextModel() returns null at the end) and per-minute retries are capped.
+  while (true) {
+    const model = activeModel;
+    const hash = cacheHash(model, sentence);
 
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Cache hit — skip the Gemini call entirely. Cuts cost to zero on re-syncs.
+    const cached = await prisma.sentenceCache.findUnique({ where: { hash } });
+    if (cached) {
+      await prisma.sentenceCache.update({
+        where: { hash },
+        data: { hitCount: { increment: 1 }, lastUsedAt: new Date() },
+      });
+      return {
+        translation: cached.translation,
+        grammar: JSON.parse(cached.grammarJson),
+        vocabulary: JSON.parse(cached.vocabularyJson),
+      };
+    }
+
     try {
       const response = await ai.models.generateContent({
-        model: env.GEMINI_MODEL,
+        model,
         contents: `Sentence: "${sentence}"`,
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
@@ -105,13 +148,14 @@ async function analyzeSentence(sentence: string): Promise<IAnalyzedSentence> {
       parsed.vocabulary = parsed.vocabulary ?? [];
 
       // Persist to cache for next time. Use upsert in case two concurrent
-      // pipeline runs raced on the same sentence.
+      // pipeline runs raced on the same sentence. Cache is keyed by model, so
+      // each model builds its own cache.
       await prisma.sentenceCache.upsert({
         where: { hash },
         update: { lastUsedAt: new Date() },
         create: {
           hash,
-          model: env.GEMINI_MODEL,
+          model,
           sentence,
           translation: parsed.translation,
           grammarJson: JSON.stringify(parsed.grammar),
@@ -121,21 +165,40 @@ async function analyzeSentence(sentence: string): Promise<IAnalyzedSentence> {
 
       return parsed;
     } catch (err) {
-      const retryAfter = parseRetryDelaySeconds(err);
-      if (retryAfter != null && attempt < maxAttempts) {
-        // Cap backoff at 60s so we never wedge the pipeline.
-        const wait = Math.min(retryAfter, 60) * 1000;
-        console.warn(`[processor] 429 — sleeping ${wait}ms then retrying`);
-        await sleep(wait);
-        continue;
+      if (is429(err)) {
+        const fallback = nextModel(model);
+        // Daily quota gone — same model is useless until reset; switch now.
+        if (isDailyQuota(err) && fallback) {
+          console.warn(`[processor] ${model} daily quota exhausted — switching to ${fallback}`);
+          activeModel = fallback;
+          rateLimitRetries = 0;
+          continue;
+        }
+        // Per-minute throttle — back off (cap 60s) and retry the same model.
+        if (rateLimitRetries < maxRateLimitRetries) {
+          rateLimitRetries++;
+          const wait = Math.min(parseRetryDelaySeconds(err) ?? 5, 60) * 1000;
+          console.warn(`[processor] 429 on ${model} — sleeping ${wait}ms (retry ${rateLimitRetries})`);
+          await sleep(wait);
+          continue;
+        }
+        // Out of per-minute retries — fall back to the next model if any.
+        if (fallback) {
+          console.warn(`[processor] ${model} still rate-limited — switching to ${fallback}`);
+          activeModel = fallback;
+          rateLimitRetries = 0;
+          continue;
+        }
       }
       throw err;
     }
   }
-  throw new Error("unreachable");
 }
 
 export async function processArticles(articles: IRawArticle[]): Promise<IVocabItem[]> {
+  // Start each run from the primary model so a daily quota reset is picked up.
+  resetActiveModel();
+  console.log(`[processor] model chain: ${MODEL_CHAIN.join(" -> ")}`);
   const collectedVocab: IVocabItem[] = [];
 
   for (const article of articles) {

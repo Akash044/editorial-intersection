@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { env } from "../config/env";
 import { scrapeArticles } from "./scraper";
-import { processArticles } from "./processor";
+import { processArticles, getActiveModel, getModelChain } from "./processor";
 import { sendDailyNotification } from "./notifier";
 
 let running = false;
@@ -14,6 +14,8 @@ export interface PipelineStatus {
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
   lastError: string | null;
+  activeModel: string;
+  modelChain: string[];
 }
 
 export function getPipelineStatus(): PipelineStatus {
@@ -22,6 +24,8 @@ export function getPipelineStatus(): PipelineStatus {
     lastStartedAt: lastStartedAt?.toISOString() ?? null,
     lastFinishedAt: lastFinishedAt?.toISOString() ?? null,
     lastError,
+    activeModel: getActiveModel(),
+    modelChain: getModelChain(),
   };
 }
 

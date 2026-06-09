@@ -1,0 +1,36 @@
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Claude Code session history ---
+.cc-history/
+
+# --- Secrets / env (defense-in-depth; subprojects also ignore these) ---
+.env
+.env.*
+!.env.example
+**/firebase-service-account.json
+**/google-services.json
+**/GoogleService-Info.plist
+
+# --- Dependencies / build output (subprojects also ignore these) ---
+node_modules/
+dist/
+build/
+*.log
+
+# --- Flutter desktop targets (this is a mobile-only app on a FAT32 drive that
+# can't create the desktop plugin symlinks; regenerate with `flutter create .`) ---
+mobile/windows/
+mobile/linux/
+mobile/macos/

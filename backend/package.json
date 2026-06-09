@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "pipeline:run": "tsx src/scripts/run-pipeline.ts"
+    "pipeline:run": "tsx src/scripts/run-pipeline.ts",
+    "scrape:test": "tsx src/scripts/test-scrape.ts"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",

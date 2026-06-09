@@ -27,7 +27,7 @@ class GrammarBottomSheet extends StatelessWidget {
                     color: Theme.of(context).colorScheme.primary,
                   )),
           const Divider(height: 32),
-          _SectionHeader(icon: Icons.menu_book_outlined, title: 'Grammar'),
+          const _SectionHeader(icon: Icons.menu_book_outlined, title: 'Grammar'),
           const SizedBox(height: 8),
           Text(g.breakdown),
           const SizedBox(height: 12),
@@ -44,7 +44,7 @@ class GrammarBottomSheet extends StatelessWidget {
           ),
           if (sentence.vocabulary.isNotEmpty) ...[
             const Divider(height: 32),
-            _SectionHeader(icon: Icons.translate, title: 'Vocabulary'),
+            const _SectionHeader(icon: Icons.translate, title: 'Vocabulary'),
             const SizedBox(height: 8),
             ...sentence.vocabulary.map((v) => VocabCard(word: v)),
           ],
